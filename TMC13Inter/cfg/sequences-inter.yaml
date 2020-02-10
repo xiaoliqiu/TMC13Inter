@@ -1,0 +1,26 @@
+---
+sequences:
+  ford_01_q1mm:
+    src%d: Ford_01_vox1mm-%04d.ply
+
+  ford_02_q1mm:
+    src%d: Ford_02_vox1mm-%04d.ply
+
+  ford_03_q1mm:
+    src%d: Ford_03_vox1mm-%04d.ply
+
+  qnxadas-junction-approach:
+    src%d: %06d.ply
+    norm%d: %06d_n.ply
+
+  qnxadas-junction-exit:
+    src%d: %06d.ply
+    norm%d: %06d_n.ply
+
+  qnxadas-motorway-join:
+    src%d: %06d.ply
+    norm%d: %06d_n.ply
+
+  qnxadas-navigating-bends:
+    src%d: %06d.ply
+    norm%d: %06d_n.ply

@@ -1,0 +1,25 @@
+---
+encflags:
+ - uncompressedDataPath: ${src%d}
+ - firstFrameNum: ${first-frame}
+ - frameCount: ${num-frames}
+ - randomAccessPeriod: 8
+ - motionParamPreset: ${motion-preset}
+
+decflags:
+ - firstFrameNum: ${first-frame}
+
+sequences:
+  ford_01_q1mm: { motion-preset: 1 }
+  ford_02_q1mm: { motion-preset: 1 }
+  ford_03_q1mm: { motion-preset: 1 }
+  qnxadas-junction-approach: { motion-preset: 1 }
+  qnxadas-junction-exit:     { motion-preset: 1 }
+  qnxadas-motorway-join:     { motion-preset: 1 }
+  qnxadas-navigating-bends:  { motion-preset: 1 }
+
+  8ivfbv2_longdress_vox10:   { motion-preset: 2 }
+  8ivfbv2_loot_vox10:        { motion-preset: 2 }
+  8ivfbv2_redandblack_vox10: { motion-preset: 2 }
+  8ivfbv2_soldier_vox10:     { motion-preset: 2 }
+  queen:                     { motion-preset: 2 }

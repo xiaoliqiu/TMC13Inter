@@ -1,0 +1,9 @@
+---
+encflags:
+ - uncompressedDataPath: ${src%d}
+ - firstFrameNum: ${first-frame}
+ - frameCount: ${num-frames}
+ - randomAccessPeriod: 1
+
+decflags:
+ - firstFrameNum: ${first-frame}
