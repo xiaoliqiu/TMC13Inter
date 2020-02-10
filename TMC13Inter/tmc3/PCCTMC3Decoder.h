@@ -66,6 +66,10 @@ public:
 
   int decompress(
     const DecoderParams& params,
+#if INTER_HIERARCHICAL
+    const int firstFrameNum,
+    const int frameCount,
+#endif
     const PayloadBuffer* buf,
     Callbacks* callback);
 
@@ -74,6 +78,12 @@ public:
   void storeSps(SequenceParameterSet&& sps);
   void storeGps(GeometryParameterSet&& gps);
   void storeAps(AttributeParameterSet&& aps);
+
+#if INTER_HIERARCHICAL
+  void setPOC(int pocSeq) { poc = pocSeq; }
+  void setFrame(int frameSeq) { frameNum = frameSeq; }
+  void setLastGOP(bool lastGOPInitial) { lastGOP = lastGOPInitial; }
+#endif
 
   //==========================================================================
 
@@ -98,6 +108,17 @@ private:
   // used to predict a frame.
   PCCPointSet3 _refPointCloud;
 
+#if INTER_HIERARCHICAL
+  PCCPointSet3 _backRefPointCloud;
+  PCCPointSet3 recGOPPointCloud[9];
+
+  int poc;
+  int frameNum;
+  bool lastGOP;
+  int firstFrameNum;
+  int frameCount;
+#endif
+
   // Received parameter sets, mapping parameter set id -> parameterset
   std::map<int, SequenceParameterSet> _spss;
   std::map<int, GeometryParameterSet> _gpss;
@@ -112,7 +133,11 @@ private:
 
 class PCCTMC3Decoder3::Callbacks {
 public:
+#if INTER_HIERARCHICAL
+  virtual void onOutputCloud(const PCCPointSet3&, int) = 0;
+#else
   virtual void onOutputCloud(const PCCPointSet3&) = 0;
+#endif
 };
 
 //============================================================================

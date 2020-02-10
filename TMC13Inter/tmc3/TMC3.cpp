@@ -110,9 +110,16 @@ private:
 
   int frameNum;
 
+#if INTER_HIERARCHICAL
+  int poc;
+  bool lastGOP;
+#endif
+
   // When zero, the current frame is a random access point and must
   // be independently decodable.
+#if !INTER_HIERARCHICAL
   int framesBeforeNextRandomAccessPoint;
+#endif
 };
 
 //----------------------------------------------------------------------------
@@ -125,7 +132,11 @@ public:
   int decompress(Stopwatch* clock);
 
 protected:
+#if INTER_HIERARCHICAL
+  void onOutputCloud(const PCCPointSet3& decodedPointCloud, int poc) override;
+#else
   void onOutputCloud(const PCCPointSet3& decodedPointCloud) override;
+#endif
 
 private:
   const Parameters* params;
@@ -134,6 +145,7 @@ private:
   std::ofstream bytestreamFile;
 
   int frameNum;
+
   Stopwatch* clock;
 };
 
@@ -229,7 +241,11 @@ deriveMotionParams(int presetMode, EncoderParams* params)
   params->motion.lambda = 0.5;
 
   // global motion
+#if DISABLE_GLOBLE_MOTION
+  motion.global_motion_enabled = false;
+#else
   motion.global_motion_enabled = true;
+#endif
   params->motion.globalMotionInRdo = false;
 }
 
@@ -848,18 +864,68 @@ SequenceEncoder::compress(Stopwatch* clock)
     return -1;
   }
 
+#if !INTER_HIERARCHICAL
   framesBeforeNextRandomAccessPoint = 0;
+#endif
+
   const int lastFrameNum = params->firstFrameNum + params->frameCount;
+
+#if INTER_HIERARCHICAL
+  lastGOP = false;
+#endif
+
   for (frameNum = params->firstFrameNum; frameNum < lastFrameNum; frameNum++)
   {
+#if INTER_HIERARCHICAL
+
+    if ( (frameNum + params->encoder.randomAccessPeriod - 1 - params->firstFrameNum) % params->encoder.randomAccessPeriod == 0 )
+    {
+      if ( frameNum + params->encoder.randomAccessPeriod > lastFrameNum )
+      {
+        lastGOP = true;
+      }
+    }
+
+    if ( frameNum == params->firstFrameNum || lastGOP )
+    {
+      poc = frameNum;
+    }
+    else if ( !lastGOP ) // the last GOP to be considered
+    {
+      int frameIndex = (frameNum - params->firstFrameNum - 1) % params->encoder.randomAccessPeriod;
+      int pocIndex = 0;
+      switch (frameIndex)
+      {
+      case 0: pocIndex = 8; break;
+      case 1: pocIndex = 4; break;
+      case 2: pocIndex = 2; break;
+      case 3: pocIndex = 1; break;
+      case 4: pocIndex = 3; break;
+      case 5: pocIndex = 6; break;
+      case 6: pocIndex = 5; break;
+      case 7: pocIndex = 7; break;
+      default:
+        break;
+      }
+
+      poc = (frameNum - params->firstFrameNum - 1) / params->encoder.randomAccessPeriod * params->encoder.randomAccessPeriod + params->firstFrameNum + pocIndex;
+    }
+#endif
+
+#if INTER_HIERARCHICAL
+    params->encoder.randomAccessPoint = !( (poc - params->firstFrameNum) % params->encoder.randomAccessPeriod );
+#else
     params->encoder.randomAccessPoint = !framesBeforeNextRandomAccessPoint;
+#endif
     if (compressOneFrame(clock))
       return -1;
 
+#if !INTER_HIERARCHICAL
     if (!framesBeforeNextRandomAccessPoint) {
       framesBeforeNextRandomAccessPoint = params->encoder.randomAccessPeriod;
     }
     framesBeforeNextRandomAccessPoint--;
+#endif
   }
 
   std::cout << "Total bitstream size " << bytestreamFile.tellp() << " B\n";
@@ -873,7 +939,11 @@ SequenceEncoder::compress(Stopwatch* clock)
 int
 SequenceEncoder::compressOneFrame(Stopwatch* clock)
 {
+#if INTER_HIERARCHICAL
+  std::string srcName{expandNum(params->uncompressedDataPath, poc)};
+#else
   std::string srcName{expandNum(params->uncompressedDataPath, frameNum)};
+#endif
   PCCPointSet3 pointCloud;
   if (!pointCloud.read(srcName) || pointCloud.getPointCount() == 0) {
     cout << "Error: can't open input file!" << endl;
@@ -924,6 +994,12 @@ SequenceEncoder::compressOneFrame(Stopwatch* clock)
 
   auto bytestreamLenFrameStart = bytestreamFile.tellp();
 
+#if INTER_HIERARCHICAL
+  encoder.setPOC(poc);
+  encoder.setFirstFramePOC(params->firstFrameNum);
+  encoder.setLastGOP(lastGOP);
+#endif
+
   int ret = encoder.compress(
     pointCloud, params->encoder, this, reconPointCloud.get());
   if (ret) {
@@ -952,7 +1028,11 @@ SequenceEncoder::compressOneFrame(Stopwatch* clock)
       }
     }
 
+#if INTER_HIERARCHICAL
+    std::string recName{expandNum(params->reconstructedDataPath, poc)};
+#else
     std::string recName{expandNum(params->reconstructedDataPath, frameNum)};
+#endif
     reconPointCloud->write(recName, !params->outputBinaryPly);
   }
 
@@ -976,7 +1056,11 @@ SequenceEncoder::onPostRecolour(const PCCPointSet3& cloud)
     return;
   }
 
+#if INTER_HIERARCHICAL
+  std::string plyName{expandNum(params->postRecolorPath, poc)};
+#else
   std::string plyName{expandNum(params->postRecolorPath, frameNum)};
+#endif
 
   // todo(df): stop the clock
   if (params->colorTransform != COLOR_TRANSFORM_RGB_TO_YCBCR) {
@@ -1005,6 +1089,13 @@ SequenceDecoder::decompress(Stopwatch* clock)
   }
 
   frameNum = params->firstFrameNum;
+
+#if INTER_HIERARCHICAL
+  decoder.setPOC(frameNum);
+  decoder.setLastGOP(false);
+  decoder.setFrame(frameNum);
+#endif
+
   this->clock = clock;
 
   PayloadBuffer buf;
@@ -1019,7 +1110,11 @@ SequenceDecoder::decompress(Stopwatch* clock)
     if (!fin)
       buf_ptr = nullptr;
 
+#if INTER_HIERARCHICAL
+    if (decoder.decompress(params->decoder, params->firstFrameNum, params->frameCount, buf_ptr, this)) {
+#else
     if (decoder.decompress(params->decoder, buf_ptr, this)) {
+#endif
       cout << "Error: can't decompress point cloud!" << endl;
       return -1;
     }
@@ -1040,7 +1135,11 @@ SequenceDecoder::decompress(Stopwatch* clock)
 //----------------------------------------------------------------------------
 
 void
+#if INTER_HIERARCHICAL
+SequenceDecoder::onOutputCloud(const PCCPointSet3& decodedPointCloud, int poc)
+#else
 SequenceDecoder::onOutputCloud(const PCCPointSet3& decodedPointCloud)
+#endif
 {
   // copy the point cloud in order to modify it according to the output options
   PCCPointSet3 pointCloud(decodedPointCloud);
@@ -1059,7 +1158,11 @@ SequenceDecoder::onOutputCloud(const PCCPointSet3& decodedPointCloud)
 
   // Dump the decoded colour using the pre inverse scaled geometry
   if (!params->preInvScalePath.empty()) {
+#if INTER_HIERARCHICAL
+    std::string filename{expandNum(params->preInvScalePath, poc)};
+#else
     std::string filename{expandNum(params->preInvScalePath, frameNum)};
+#endif
     pointCloud.write(params->preInvScalePath, !params->outputBinaryPly);
   }
 
@@ -1067,7 +1170,11 @@ SequenceDecoder::onOutputCloud(const PCCPointSet3& decodedPointCloud)
 
   clock->stop();
 
+#if INTER_HIERARCHICAL
+  std::string decName{ expandNum(params->reconstructedDataPath, poc) };
+#else
   std::string decName{expandNum(params->reconstructedDataPath, frameNum)};
+#endif
   if (!pointCloud.write(decName, !params->outputBinaryPly)) {
     cout << "Error: can't open output file!" << endl;
   }
@@ -1075,5 +1182,7 @@ SequenceDecoder::onOutputCloud(const PCCPointSet3& decodedPointCloud)
   clock->start();
 
   // todo(df): frame number should be derived from the bitstream
+#if !INTER_HIERARCHICAL
   frameNum++;
+#endif
 }

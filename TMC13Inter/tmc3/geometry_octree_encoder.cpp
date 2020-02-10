@@ -94,6 +94,9 @@ public:
   void encodeLpuPresence(bool hasMotion);
 
   void encodeVvsW(bool is_world);
+#if INTER_HIERARCHICAL
+  void encodeInterDir(bool interDir);
+#endif
 
 private:
   // selects between the bitwise and bytewise occupancy coders
@@ -110,6 +113,9 @@ private:
   AdaptiveBitModel _ctxNumIdcmPointsEq1;
   AdaptiveBitModelFast _ctxLpuPresent;
   AdaptiveBitModelFast _ctxVvsW;
+#if INTER_HIERARCHICAL
+  AdaptiveBitModelFast _ctxInterDir;
+#endif
 
   // For bitwise occupancy coding
   //   map 0 = not predicted
@@ -197,6 +203,15 @@ GeometryOctreeEncoder::encodeVvsW(bool is_world)
 {
   _arithmeticEncoder->encode(is_world, _ctxVvsW);
 }
+
+#if INTER_HIERARCHICAL
+void
+GeometryOctreeEncoder::encodeInterDir(bool interDir)
+{
+  _arithmeticEncoder->encode(interDir, _ctxInterDir);
+}
+
+#endif
 
 //-------------------------------------------------------------------------
 // encode occupancy bits (neighPattern10 == 0 case)
@@ -424,6 +439,9 @@ encodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyEncoder* arithmeticEncoder,
   pcc::ringbuf<PCCOctree3Node>* nodesRemaining)
 {
@@ -443,12 +461,21 @@ encodeGeometryOctree(
   node00.pos = uint32_t(0);
   node00.predStart = uint32_t(0);
   node00.predEnd = uint32_t(predPointCloud.getPointCount());
+#if INTER_HIERARCHICAL
+  node00.backPredStart = uint32_t(0);
+  node00.backPredEnd = uint32_t(backPredPointCloud.getPointCount());
+#endif
   node00.neighPattern = 0;
   node00.numSiblingsPlus1 = 8;
   node00.siblingOccupancy = 0;
   node00.numSiblingsMispredicted = 0;
   node00.hasMotion = 0;
   node00.isCompensated = 0;
+
+#if INTER_COUNT
+  int countInter = 0;
+  int countIntra = 0;
+#endif
 
   // global motion is here
   PCCPointSet3 pointPredictorWorld;
@@ -518,24 +545,46 @@ encodeGeometryOctree(
         break;
     }
 
-    PCCOctree3Node& node0 = fifo.front();
+    PCCOctree3Node& node0 = fifo.front(); 
 
     // find and code LPU/PU/MV/VvsW
     if (!isIntra && (1 << nodeSizeLog2) == gps.motion.motion_block_size) {
       std::unique_ptr<PUtree> PU_tree(new PUtree);
+#if INTER_HIERARCHICAL
+      int interDir;
+#endif
 
       node0.hasMotion = motionSearchForNode(
         pointCloud, &node0, params.motion, gps.motion, nodeSizeLog2,
+#if INTER_HIERARCHICAL
+        arithmeticEncoder, predPointCloud, backPredPointCloud, interDir, bufferPoints.get(), PU_tree.get(),
+#else
         arithmeticEncoder, predPointCloud, bufferPoints.get(), PU_tree.get(),
+#endif
         pointPredictorVehicle, pointPredictorWorld);
+
+#if INTER_HIERARCHICAL
+      node0.interDir = interDir;
+#endif
 
       encoder.encodeLpuPresence(node0.hasMotion);
       if (node0.hasMotion) {
+#if INTER_COUNT
+        countInter++;
+#endif
         node0.PU_tree = std::move(PU_tree);
         // encode world vs vehicle
         if (gps.motion.global_motion_enabled)
           encoder.encodeVvsW(node0.PU_tree->isWorld);
+
+#if INTER_HIERARCHICAL
+        encoder.encodeInterDir(node0.interDir);
+#endif
+
       } else {
+#if INTER_COUNT
+        countIntra++;
+#endif
         node0.PU_tree = nullptr;
       }
     }
@@ -544,7 +593,11 @@ encodeGeometryOctree(
     if (node0.PU_tree) {
       encode_splitPU_MV_MC(
         &node0, node0.PU_tree.get(), gps.motion, nodeSizeLog2,
+#if INTER_HIERARCHICAL
+        arithmeticEncoder, predPointCloud, backPredPointCloud, &compensatedPointCloud,
+#else
         arithmeticEncoder, predPointCloud, &compensatedPointCloud,
+#endif
         pointPredictorVehicle, pointPredictorWorld);
     }
 
@@ -567,16 +620,45 @@ encodeGeometryOctree(
 
     // sort and partition the predictor
     std::array<int, 8> predCounts = {};
+#if INTER_HIERARCHICAL
+    std::array<int, 8> backPredCounts = {};
+#endif
+
     if (node0.isCompensated) {
+#if INTER_HIERARCHICAL
+      if ( node0.interDir == 1 ) {
+        countingSort(
+          PCCPointSet3::iterator(&compensatedPointCloud, node0.backPredStart),
+          PCCPointSet3::iterator(&compensatedPointCloud, node0.backPredEnd),
+          backPredCounts, sortPredicate);
+      } else if ( node0.interDir == 0 ) {
+        countingSort(
+          PCCPointSet3::iterator(&compensatedPointCloud, node0.predStart),
+          PCCPointSet3::iterator(&compensatedPointCloud, node0.predEnd),
+          predCounts, sortPredicate);
+      }
+#else
       countingSort(
         PCCPointSet3::iterator(&compensatedPointCloud, node0.predStart),
         PCCPointSet3::iterator(&compensatedPointCloud, node0.predEnd),
         predCounts, sortPredicate);
+#endif
     } else {
+#if INTER_HIERARCHICAL
+      countingSort(
+        PCCPointSet3::iterator(&backPredPointCloud, node0.backPredStart),
+        PCCPointSet3::iterator(&backPredPointCloud, node0.backPredEnd), backPredCounts,
+        sortPredicate);
       countingSort(
         PCCPointSet3::iterator(&predPointCloud, node0.predStart),
         PCCPointSet3::iterator(&predPointCloud, node0.predEnd), predCounts,
         sortPredicate);
+#else
+      countingSort(
+        PCCPointSet3::iterator(&predPointCloud, node0.predStart),
+        PCCPointSet3::iterator(&predPointCloud, node0.predEnd), predCounts,
+        sortPredicate);
+#endif
     }
 
     // generate the bitmap of child occupancy and count
@@ -589,6 +671,11 @@ encodeGeometryOctree(
     for (int i = 0; i < 8; i++) {
       bool childOccupied = !!childCounts[i];
       bool childPredicted = !!predCounts[i];
+#if INTER_HIERARCHICAL
+      if (node0.interDir == 1) {
+        childPredicted = !!backPredCounts[i];
+      }
+#endif
       if (childOccupied) {
         occupancy |= 1 << i;
         numSiblings++;
@@ -596,7 +683,11 @@ encodeGeometryOctree(
       if (childPredicted) {
         predOccupancy |= 1 << i;
       }
+#if INTER_HIERARCHICAL
+      if ( predCounts[i] > 2 || backPredCounts[i] > 2 ) {
+#else
       if (predCounts[i] > 2) {
+#endif
         predOccupancyStrong |= 1 << i;
       }
       predFailureCount += childOccupied != childPredicted;
@@ -673,6 +764,9 @@ encodeGeometryOctree(
     //  - otherwise, insert split children into fifo while updating neighbour state
     int childPointsStartIdx = node0.start;
     int predPointsStartIdx = node0.predStart;
+#if INTER_HIERARCHICAL
+    int backPredPointsStartIdx = node0.backPredStart;
+#endif
 
     int pos_fs = 1;  // first split falg is popped
     int pos_fp = 0;
@@ -684,6 +778,9 @@ encodeGeometryOctree(
       if (!childCounts[i]) {
         // child is empty: skip
         predPointsStartIdx += predCounts[i];
+#if INTER_HIERARCHICAL
+        backPredPointsStartIdx += backPredCounts[i];
+#endif
         continue;
       }
 
@@ -700,11 +797,23 @@ encodeGeometryOctree(
       child.pos[2] = node0.pos[2] + (z << childSizeLog2);
 
       child.start = childPointsStartIdx;
+#if INTER_HIERARCHICAL
+      child.interDir = node0.interDir;
+#endif
       child.predStart = predPointsStartIdx;
+#if INTER_HIERARCHICAL
+      child.backPredStart = backPredPointsStartIdx;
+#endif
       childPointsStartIdx += childCounts[i];
       predPointsStartIdx += predCounts[i];
+#if INTER_HIERARCHICAL
+      backPredPointsStartIdx += backPredCounts[i];
+#endif
       child.end = childPointsStartIdx;
       child.predEnd = predPointsStartIdx;
+#if INTER_HIERARCHICAL
+      child.backPredEnd = backPredPointsStartIdx;
+#endif
       child.numSiblingsPlus1 = numSiblings;
       child.siblingOccupancy = occupancy;
       child.numSiblingsMispredicted = predFailureCount;
@@ -755,6 +864,10 @@ encodeGeometryOctree(
     }
   }
 
+#if INTER_COUNT
+  std::cout << "The inter count is " << countInter << " The intra count is " << countIntra << std::endl;
+#endif
+
   // return partial coding result
   if (nodesRemaining) {
     *nodesRemaining = std::move(fifo);
@@ -798,10 +911,26 @@ encodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyEncoder* arithmeticEncoder)
 {
+#if MV_PREDICTION
+  g_positionX.clear();
+  g_positionY.clear();
+  g_positionZ.clear();
+  g_MVX.clear();
+  g_MVY.clear();
+  g_MVZ.clear();
+#endif
+
   encodeGeometryOctree(
+#if INTER_HIERARCHICAL
+    params, sps, gps, gbh, pointCloud, predPointCloud, backPredPointCloud, arithmeticEncoder,
+#else
     params, sps, gps, gbh, pointCloud, predPointCloud, arithmeticEncoder,
+#endif
     nullptr);
 }
 

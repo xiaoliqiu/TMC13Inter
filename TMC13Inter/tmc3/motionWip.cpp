@@ -52,6 +52,9 @@ namespace pcc {
 
 struct MotionEntropy {
   AdaptiveBitModel splitPu;
+#if MV_PREDICTION_RDO
+  AdaptiveBitModel bPred;
+#endif
 
   StaticBitModel mvSign;
   AdaptiveBitModel mvIsZero;
@@ -70,6 +73,9 @@ public:
   {}
 
   void encodeSplitPu(int symbol);
+#if MV_PREDICTION_RDO
+  void encodePredPu(int symbol);
+#endif
   void encodeVector(
     const PCCVector3<int>& mv,
     int mvPrecision,
@@ -89,6 +95,9 @@ public:
   {}
 
   bool decodeSplitPu();
+#if MV_PREDICTION_RDO
+  bool decodePredPu();
+#endif
   void decodeVector(PCCVector3<int>* mv, int boundPrefix, int boundSuffix);
 
 private:
@@ -139,6 +148,14 @@ MotionEntropyEncoder::encodeSplitPu(int symbol)
   _arithmeticEncoder->encode(symbol, splitPu);
 }
 
+#if MV_PREDICTION_RDO
+inline void
+MotionEntropyEncoder::encodePredPu(int symbol)
+{
+  _arithmeticEncoder->encode(symbol, bPred);
+}
+#endif
+
 //----------------------------------------------------------------------------
 
 inline bool
@@ -146,6 +163,14 @@ MotionEntropyDecoder::decodeSplitPu()
 {
   return _arithmeticDecoder->decode(splitPu);
 }
+
+#if MV_PREDICTION_RDO
+inline bool
+MotionEntropyDecoder::decodePredPu()
+{
+  return _arithmeticDecoder->decode(bPred);
+}
+#endif
 
 //----------------------------------------------------------------------------
 
@@ -334,8 +359,7 @@ find_motion(
   int max_distance = wSize << 1;
   PCCVector3<int> bestV_NoSplit = PCCVector3<int>(0, 0, 0);
   PCCVector3<int> bestV_NoSplit_2nd = PCCVector3<int>(0, 0, 0);
-  bool flag_must_split =
-    false;  // local_size > param.minPuSize && Block0.size() >= 256;
+  bool flag_must_split = false;  // local_size > param.minPuSize && Block0.size() >= 256;
 
   if (!flag_must_split) {
     double d = 0.;
@@ -346,17 +370,31 @@ find_motion(
     int* pBuffer = bufferPoints;
 
     std::vector<PCCVector3<int>>::iterator itB = Block0.begin();
-    int jumpBlock = 1
-      + (Block0.size()
-         >> encParam
-              .decimate);  // (kind of) random sampling of the original block to code
+    int jumpBlock = 1 + (Block0.size() >> encParam.decimate);  // (kind of) random sampling of the original block to code
     int Nsamples = 0;
     int a0, a1, a2;
-    for (int Nb = 0; Nb < Block0.size();
-         Nb += jumpBlock, itB += jumpBlock, Nsamples++) {
+#if INTER_HIERARCHICAL
+    for (int Nb = 0; Nb < int(Block0.size()); Nb += jumpBlock) {
+#else
+    for (int Nb = 0; Nb < int(Block0.size()); Nb += jumpBlock, itB += jumpBlock, Nsamples++) {
+#endif
       PCCVector3<int> b = *itB;
       int min_d = max_distance;
       for (const auto w : Window) {
+#if MV_PREDICTION_ME
+        if (w[0] >= x0 && w[0] < x0 + local_size && w[1] >= y0 &&
+          w[1] < y0 + local_size && w[2] >= z0 && w[2] < z0 + local_size)
+        {
+          a0 = std::abs(b[0] - w[0]);
+          a1 = std::abs(b[1] - w[1]);
+          a2 = std::abs(b[2] - w[2]);
+
+          a0 += a1 + a2;
+          if (a0 < min_d)
+            min_d = a0;
+        }
+      }
+#else
         pBuffer[0] = b[0] - w[0];
         a0 = std::abs(pBuffer[0]);
         pBuffer[1] = b[1] - w[1];
@@ -373,11 +411,18 @@ find_motion(
           min_d = a0;
       }
       blockEnds.push_back(blockPos);
+#endif
       Dist += plus1log2shifted4(min_d);  // 1/0.0625 = 16 times log
+#if INTER_HIERARCHICAL
+      Nsamples++;
+      if (Nsamples * jumpBlock < Block0.size())
+      {
+        itB += jumpBlock;
+      }
+#endif
     }
-    d = jumpBlock * Dist * 0.0625
-      + encParam.lambda
-        * motionEntropy.estimateVector(
+
+    d = jumpBlock * Dist * 0.0625 + encParam.lambda * motionEntropy.estimateVector(
             PCCVector3<int>(0, 0, 0), param.motion_precision,
             param.motion_max_prefix_bits, param.motion_max_suffix_bits);
 
@@ -396,7 +441,7 @@ find_motion(
     //const int searchPattern[3 * 26] = { 1,1,0,  1,0,0,  1,-1,0,  0,1,0,  0,-1,0,  -1,1,0,  -1,0,0,  -1,-1,0,  1,0,1,  0,1,1,  0,0,1,  0,-1,1,  -1,0,1,  1,0,-1,  0,1,-1,  0,0,-1,  0,-1,-1,  -1,0,-1,  1,1,1,  1,1,-1,  1,-1,1,  1,-1,-1,  -1,1,1,  -1,1,-1,  -1,-1,1,  -1,-1,-1 };
 
     // loop MV search
-    bool flag_first_search = true;  // if true one seed, oitherwise two
+    bool flag_first_search = true;  // if true one seed, otherwise two
     while (Amotion >= param.motion_precision) {
       double old_b = best_d[0];
 
@@ -411,26 +456,44 @@ find_motion(
 
         // loop on searchPattern
         for (int t = 0; t < 18; t++, pSearch += 3) {
-          PCCVector3<int> V = Vs
-            + PCCVector3<int>(pSearch[0] * Amotion, pSearch[1] * Amotion,
-                              pSearch[2] * Amotion);
-          if (
-            std::abs(V[0]) > wSize || std::abs(V[1]) > wSize
-            || std::abs(V[2]) > wSize)
+          PCCVector3<int> V = Vs + PCCVector3<int>(pSearch[0] * Amotion, pSearch[1] * Amotion, pSearch[2] * Amotion);
+          if ( std::abs(V[0]) > wSize || std::abs(V[1]) > wSize || std::abs(V[2]) > wSize)
             continue;  // ensure MV does not go out of the window
-          if (
-            std::find(list_tested.begin(), list_tested.end(), V)
-            != list_tested.end())
+          if ( std::find(list_tested.begin(), list_tested.end(), V ) != list_tested.end() )
             continue;
 
           Dist = 0;
           int index = 0;
           pBuffer = bufferPoints;
+#if MV_PREDICTION_ME
+          std::vector<PCCVector3<int>>::iterator itB = Block0.begin();
+          int jumpBlock = 1 + (Block0.size() >> encParam.decimate);  // (kind of) random sampling of the original block to code
+          int Nsamples = 0;
+          int a0, a1, a2;
+          for (int Nb = 0; Nb < int(Block0.size()); Nb += jumpBlock, itB += jumpBlock, Nsamples++) {
+            PCCVector3<int> b = *itB;
+            int min_d = max_distance;
+            for (const auto w : Window) {
+              PCCVector3<int> wV = w - V;
+              if (wV[0] >= x0 && wV[0] < x0 + local_size && wV[1] >= y0 &&
+                wV[1] < y0 + local_size && wV[2] >= z0 && wV[2] < z0 + local_size)
+              {
+                a0 = std::abs(b[0] - wV[0]);
+                a1 = std::abs(b[1] - wV[1]);
+                a2 = std::abs(b[2] - wV[2]);
+
+                a0 += a1 + a2;
+                if (a0 < min_d)
+                  min_d = a0;
+              }
+            }
+            Dist += plus1log2shifted4(min_d);
+          }
+#else
           for (int Nb = 0; Nb < Nsamples; Nb++) {
             int min_d = max_distance;
             while (index < blockEnds[Nb + 1]) {
-              int local_d = std::abs(pBuffer[0] + V[0])
-                + std::abs(pBuffer[1] + V[1]) + std::abs(pBuffer[2] + V[2]);
+              int local_d = std::abs(pBuffer[0] + V[0]) + std::abs(pBuffer[1] + V[1]) + std::abs(pBuffer[2] + V[2]);
               if (local_d < min_d)
                 min_d = local_d;
               index++;
@@ -438,9 +501,8 @@ find_motion(
             }
             Dist += plus1log2shifted4(min_d);  // 1/0.0625 = 16 times log
           }
-          d = jumpBlock * Dist * 0.0625
-            + encParam.lambda
-              * motionEntropy.estimateVector(
+#endif
+          d = jumpBlock * Dist * 0.0625 + encParam.lambda * motionEntropy.estimateVector(
                   V, param.motion_precision, param.motion_max_prefix_bits,
                   param.motion_max_suffix_bits);
 
@@ -529,10 +591,8 @@ find_motion(
       std::vector<PCCVector3<int>> Window1;
       wSize = param.motion_window_size;
       for (const auto& b : Window) {
-        if (
-          b[0] >= x1 - wSize && b[0] < xhigh + wSize && b[1] >= y1 - wSize
-          && b[1] < yhigh + wSize && b[2] >= z1 - wSize
-          && b[2] < zhigh + wSize)
+        if ( b[0] >= x1 - wSize && b[0] < xhigh + wSize && b[1] >= y1 - wSize
+          && b[1] < yhigh + wSize && b[2] >= z1 - wSize && b[2] < zhigh + wSize )
           Window1.push_back(b);
       }
       cost_Split += find_motion(
@@ -654,6 +714,10 @@ motionSearchForNode(
   const int nodeSizeLog2,
   EntropyEncoder* arithmeticEncoder,
   PCCPointSet3& pointPredictor,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPointPredictor,
+  int& interDir,
+#endif
   int* bufferPoints,
   PUtree* local_PU_tree,
   PCCPointSet3& pointPredictorVehicle,
@@ -671,9 +735,13 @@ motionSearchForNode(
 
   // find search window while converting to integer
   std::vector<PCCVector3<int>> Window;
+#if INTER_HIERARCHICAL
+  std::vector<PCCVector3<int>> backWindow;
+#endif
   std::vector<PCCVector3<int>> Window_V;
   std::vector<PCCVector3<int>> Window_W;
   int node_size = 1 << nodeSizeLog2;
+
   int xlow = node0->pos[0] - param.motion_window_size;
   int xhigh = node0->pos[0] + node_size + param.motion_window_size;
   int ylow = node0->pos[1] - param.motion_window_size;
@@ -681,6 +749,7 @@ motionSearchForNode(
   int zlow = node0->pos[2] - param.motion_window_size;
   int zhigh = node0->pos[2] + node_size + param.motion_window_size;
 
+  // window size
   if (!param.global_motion_enabled)  // no global motion
   {
     for (size_t i = 0; i < pointPredictor.getPointCount(); ++i) {
@@ -695,8 +764,26 @@ motionSearchForNode(
         Window.push_back(point_int);
     }
 
+#if INTER_HIERARCHICAL
+    for (size_t i = 0; i < backPointPredictor.getPointCount(); ++i) {
+      const PCCVector3D point = backPointPredictor[i];
+      const PCCVector3<int> point_int =
+        PCCVector3<int>(int(point[0]), int(point[1]), int(point[2]));
+
+      if (
+        point_int[0] >= xlow && point_int[0] < xhigh && point_int[1] >= ylow
+        && point_int[1] < yhigh && point_int[2] >= zlow
+        && point_int[2] < zhigh)
+        backWindow.push_back(point_int);
+    }
+#endif
+
     // if window is empty, no compensation
+#if INTER_HIERARCHICAL
+    if (!Window.size() && !backWindow.size()) {
+#else
     if (!Window.size()) {
+#endif
       return false;
     }
   } else  //global motion
@@ -744,9 +831,57 @@ motionSearchForNode(
 
   if (!param.global_motion_enabled) {
     // MV search
+#if INTER_HIERARCHICAL
+    if ( Window.size() && backWindow.size())
+    {
+      std::unique_ptr<PUtree> forward_PU_tree(new PUtree);
+      std::unique_ptr<int> forwardbufferPoints;
+      forwardbufferPoints.reset(new int[3 * 3000 * 10000]);
+      double forwardCost = find_motion(
+        encParam, param, mcEstimate, Window, Block0, x0, y0, z0,
+        param.motion_block_size, forward_PU_tree.get(), forwardbufferPoints.get());
+
+      std::unique_ptr<PUtree> backward_PU_tree(new PUtree);
+      std::unique_ptr<int> backwardbufferPoints;
+      backwardbufferPoints.reset(new int[3 * 3000 * 10000]);
+      double backwardCost = find_motion(
+        encParam, param, mcEstimate, backWindow, Block0, x0, y0, z0,
+        param.motion_block_size, backward_PU_tree.get(), backwardbufferPoints.get());
+
+      if (forwardCost < backwardCost)
+      {
+        *local_PU_tree = *(forward_PU_tree.get());
+        *bufferPoints = *(forwardbufferPoints.get());
+        interDir = 0;
+      }
+      else
+      {
+        *local_PU_tree = *(backward_PU_tree.get());
+        *bufferPoints = *(backwardbufferPoints.get());
+        interDir = 1;
+      }
+    }
+    else if (Window.size())
+    {
+      find_motion(
+        encParam, param, mcEstimate, Window, Block0, x0, y0, z0,
+        param.motion_block_size, local_PU_tree, bufferPoints);
+      
+      interDir = 0;
+    }
+    else if (backWindow.size())
+    {
+      find_motion(
+        encParam, param, mcEstimate, backWindow, Block0, x0, y0, z0,
+        param.motion_block_size, local_PU_tree, bufferPoints);
+
+      interDir = 1;
+    }
+#else
     find_motion(
       encParam, param, mcEstimate, Window, Block0, x0, y0, z0,
       param.motion_block_size, local_PU_tree, bufferPoints);
+#endif
   } else  //global motion
   {
     if (encParam.globalMotionInRdo)  // RDO determination V vs W
@@ -810,6 +945,9 @@ encode_splitPU_MV_MC(
   const int nodeSizeLog2,
   EntropyEncoder* arithmeticEncoder,
   PCCPointSet3& pointPredictor,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPointPredictor,
+#endif
   PCCPointSet3* compensatedPointCloud,
   PCCPointSet3& pointPredictorVehicle,
   PCCPointSet3& pointPredictorWorld)
@@ -826,9 +964,94 @@ encode_splitPU_MV_MC(
 
     // encode MV
     PCCVector3<int> MV = local_PU_tree->MVs[0];
+
+#if MV_PREDICTION
+    // find the neighbor
+
+    PCCVector3<int> predMV = PCCVector3<int>(0, 0, 0);
+
+    int bestDist = 10000;
+    int bestIndex = 0;
+    if ( g_positionX.size() != 0 )
+    {
+      for ( int i = 0; i < g_positionX.size(); i++ )
+      {
+        PCCVector3<int> posRef = PCCVector3<int>(g_positionX[i], g_positionY[i], g_positionZ[i]);
+        PCCVector3<int> posCurr = PCCVector3<int>((node0->pos)[0], (node0->pos)[1], (node0->pos)[2]);
+        PCCVector3<int> diffPos = posRef - posCurr;
+        int dist = diffPos.getNorm();
+
+        if ( dist <= bestDist )
+        {
+          bestDist = dist;
+          bestIndex = i;
+        }
+      }
+
+      if ( bestDist < 256 )   // to avoid too far distance
+      {
+        predMV = PCCVector3<int>(g_MVX[bestIndex], g_MVY[bestIndex], g_MVZ[bestIndex]);
+      }
+    }
+
+    // MV prediction
+    PCCVector3<int> diffMV = MV - predMV;
+
+    g_positionX.push_back((node0->pos)[0]);
+    g_positionY.push_back((node0->pos)[1]);
+    g_positionZ.push_back((node0->pos)[2]);
+    g_MVX.push_back(MV[0]);
+    g_MVY.push_back(MV[1]);
+    g_MVZ.push_back(MV[2]);
+
+#if MV_PREDICTION_RDO
+    bool bPredict = false;
+
+    if ( predMV == PCCVector3<int>(0, 0, 0) )
+    {
+      bPredict = false;
+    }
+    else
+    {
+      if ( bestDist < 256 )
+      {
+        int maxMV = param.motion_window_size / param.motion_precision - 1;
+        if ( abs(diffMV[0]) + abs(diffMV[1]) + abs(diffMV[2]) < abs(MV[0]) + abs(MV[1]) + abs(MV[2]) && abs(diffMV[0]) <= maxMV && abs(diffMV[1]) <= maxMV && abs(diffMV[2]) <= maxMV)
+        {
+          bPredict = true;
+        }
+
+        motionEncoder.encodePredPu(bPredict);
+      }
+    }
+#endif
+
+#endif
+
+#if MV_PREDICTION_RDO
+    if ( bPredict )
+    {
+      g_predGood++;
+      motionEncoder.encodeVector(
+        diffMV, param.motion_precision, param.motion_max_prefix_bits,
+        param.motion_max_suffix_bits);
+    }
+    else
+    {
+      g_predBad++;
+      motionEncoder.encodeVector(
+        MV, param.motion_precision, param.motion_max_prefix_bits,
+        param.motion_max_suffix_bits);
+    }
+#else
     motionEncoder.encodeVector(
+#if MV_PREDICTION
+      diffMV, param.motion_precision, param.motion_max_prefix_bits,
+#else
       MV, param.motion_precision, param.motion_max_prefix_bits,
+#endif
       param.motion_max_suffix_bits);
+#endif
     PCCVector3D MVd = PCCVector3D(double(MV[0]), double(MV[1]), double(MV[2]));
 
     // find search window
@@ -842,6 +1065,34 @@ encode_splitPU_MV_MC(
 
     if (!param.global_motion_enabled)  // no global motion
     {
+#if INTER_HIERARCHICAL
+      if ( node0->interDir == 0 )
+      {
+        for (size_t i = 0; i < pointPredictor.getPointCount(); ++i) {
+          const PCCVector3D point = pointPredictor[i];
+          const PCCVector3<int> point_int =
+            PCCVector3<int>(int(point[0]), int(point[1]), int(point[2]));
+          if (
+            point_int[0] >= xlow && point_int[0] < xhigh && point_int[1] >= ylow
+            && point_int[1] < yhigh && point_int[2] >= zlow
+            && point_int[2] < zhigh)
+            Window.push_back(point);
+        }
+      }
+      else if (node0->interDir == 1)
+      {
+        for (size_t i = 0; i < backPointPredictor.getPointCount(); ++i) {
+          const PCCVector3D point = backPointPredictor[i];
+          const PCCVector3<int> point_int =
+            PCCVector3<int>(int(point[0]), int(point[1]), int(point[2]));
+          if (
+            point_int[0] >= xlow && point_int[0] < xhigh && point_int[1] >= ylow
+            && point_int[1] < yhigh && point_int[2] >= zlow
+            && point_int[2] < zhigh)
+            Window.push_back(point);
+        }
+      }
+#else
       for (size_t i = 0; i < pointPredictor.getPointCount(); ++i) {
         const PCCVector3D point = pointPredictor[i];
         const PCCVector3<int> point_int =
@@ -852,6 +1103,7 @@ encode_splitPU_MV_MC(
           && point_int[2] < zhigh)
           Window.push_back(point);
       }
+#endif
     } else if (local_PU_tree->isWorld)  //  global motion World
     {
       for (size_t i = 0; i < pointPredictorWorld.getPointCount(); ++i) {
@@ -896,17 +1148,38 @@ encode_splitPU_MV_MC(
     }
 
     //and make node0 point to them
+#if INTER_HIERARCHICAL
+    if ( node0->interDir == 0 ) {
+      node0->predStart = compensatedPointCloud->getPointCount();
+    } else if ( node0->interDir == 1 ) {
+      node0->backPredStart = compensatedPointCloud->getPointCount();
+    }
+#else
     node0->predStart = compensatedPointCloud->getPointCount();
+#endif
     compensatedPointCloud->resize(
       compensatedPointCloud->getPointCount() + pointPredictorMC.size());
     size_t counter = node0->predStart;
+#if INTER_HIERARCHICAL
+    if ( node0->interDir == 1 ) {
+      counter = node0->backPredStart;
+    }
+#endif
     for (const auto& p : pointPredictorMC) {
       auto& predPoint = (*compensatedPointCloud)[counter++];
       predPoint[0] = p[0];
       predPoint[1] = p[1];
       predPoint[2] = p[2];
     }
+#if INTER_HIERARCHICAL
+    if ( node0->interDir == 0 ) {
+      node0->predEnd = compensatedPointCloud->getPointCount();
+    } else if ( node0->interDir == 1 ) {
+      node0->backPredEnd = compensatedPointCloud->getPointCount();
+    }
+#else
     node0->predEnd = compensatedPointCloud->getPointCount();
+#endif
     node0->isCompensated = true;
     return;
   }
@@ -924,6 +1197,9 @@ decode_splitPU_MV_MC(
   const int nodeSizeLog2,
   EntropyDecoder* arithmeticDecoder,
   PCCPointSet3& pointPredictor,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPointPredictor,
+#endif
   PCCPointSet3* compensatedPointCloud,
   PCCPointSet3& pointPredictorVehicle,
   PCCPointSet3& pointPredictorWorld)
@@ -939,9 +1215,90 @@ decode_splitPU_MV_MC(
   if (!split) {  // not split
     // decode MV
     PCCVector3<int> MV;
+
+#if MV_PREDICTION
+    PCCVector3<int> diffMV;
+#endif
+
+#if MV_PREDICTION
+    PCCVector3<int> predMV = PCCVector3<int>(0, 0, 0);
+    int bestDist = 10000;
+    int bestIndex = 0;
+    if (g_positionX.size() != 0)
+    {
+      for (int i = 0; i < g_positionX.size(); i++)
+      {
+        PCCVector3<int> posRef = PCCVector3<int>(g_positionX[i], g_positionY[i], g_positionZ[i]);
+        PCCVector3<int> posCurr = PCCVector3<int>((node0->pos)[0], (node0->pos)[1], (node0->pos)[2]);
+        PCCVector3<int> diffPos = posRef - posCurr;
+        int dist = diffPos.getNorm();
+
+        if (dist <= bestDist)
+        {
+          bestDist = dist;
+          bestIndex = i;
+        }
+      }
+
+      if (bestDist < 256)   // to avoid too far distance
+      {
+        predMV = PCCVector3<int>(g_MVX[bestIndex], g_MVY[bestIndex], g_MVZ[bestIndex]);
+      }
+    }
+
+#if MV_PREDICTION_RDO
+    bool bPred = false;
+    
+    if ( predMV == PCCVector3<int>(0, 0, 0) )
+    {
+      bPred = false;
+    }
+    else
+    {
+      if (bestDist < 256)
+      {
+        bPred = motionDecoder.decodePredPu();
+      }
+    }
+#endif
+
+#endif
+
+#if MV_PREDICTION_RDO
+    if (bPred)
+    {
+      motionDecoder.decodeVector(
+        &diffMV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
+
+      MV = diffMV + predMV;
+    }
+    else
+    {
+      motionDecoder.decodeVector(
+        &MV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
+    }
+#else
     motionDecoder.decodeVector(
+#if MV_PREDICTION
+      &diffMV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
+
+    MV = diffMV + predMV;
+#else
       &MV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
+#endif
+#endif
     MV *= param.motion_precision;
+
+#if MV_PREDICTION
+    g_positionX.push_back((node0->pos)[0]);
+    g_positionY.push_back((node0->pos)[1]);
+    g_positionZ.push_back((node0->pos)[2]);
+    g_MVX.push_back(MV[0]);
+    g_MVY.push_back(MV[1]);
+    g_MVZ.push_back(MV[2]);
+#endif
+
+
     PCCVector3D MVd = PCCVector3D(double(MV[0]), double(MV[1]), double(MV[2]));
 
     // find search window
@@ -955,6 +1312,34 @@ decode_splitPU_MV_MC(
 
     if (!param.global_motion_enabled)  // no global motion
     {
+#if INTER_HIERARCHICAL
+      if (node0->interDir == 0)
+      {
+        for (size_t i = 0; i < pointPredictor.getPointCount(); ++i) {
+          const PCCVector3D point = pointPredictor[i];
+          const PCCVector3<int> point_int =
+            PCCVector3<int>(int(point[0]), int(point[1]), int(point[2]));
+          if (
+            point_int[0] >= xlow && point_int[0] < xhigh && point_int[1] >= ylow
+            && point_int[1] < yhigh && point_int[2] >= zlow
+            && point_int[2] < zhigh)
+            Window.push_back(point);
+        }
+      }
+      else
+      {
+        for (size_t i = 0; i < backPointPredictor.getPointCount(); ++i) {
+          const PCCVector3D point = backPointPredictor[i];
+          const PCCVector3<int> point_int =
+            PCCVector3<int>(int(point[0]), int(point[1]), int(point[2]));
+          if (
+            point_int[0] >= xlow && point_int[0] < xhigh && point_int[1] >= ylow
+            && point_int[1] < yhigh && point_int[2] >= zlow
+            && point_int[2] < zhigh)
+            Window.push_back(point);
+        }
+      }
+#else
       for (size_t i = 0; i < pointPredictor.getPointCount(); ++i) {
         const PCCVector3D point = pointPredictor[i];
         const PCCVector3<int> point_int =
@@ -965,6 +1350,7 @@ decode_splitPU_MV_MC(
           && point_int[2] < zhigh)
           Window.push_back(point);
       }
+#endif
     } else if (node0->isWorld)  //  global motion World
     {
       for (size_t i = 0; i < pointPredictorWorld.getPointCount(); ++i) {
@@ -1009,17 +1395,38 @@ decode_splitPU_MV_MC(
     }
 
     //and make node0 point to them
+#if INTER_HIERARCHICAL
+    if ( node0->interDir == 0 ) {
+      node0->predStart = compensatedPointCloud->getPointCount();
+    } else if ( node0->interDir == 1 ) {
+      node0->backPredStart = compensatedPointCloud->getPointCount();
+    }
+#else
     node0->predStart = compensatedPointCloud->getPointCount();
+#endif
     compensatedPointCloud->resize(
       compensatedPointCloud->getPointCount() + pointPredictorMC.size());
     size_t counter = node0->predStart;
+#if INTER_HIERARCHICAL
+    if ( node0->interDir == 1 ) {
+      counter = node0->backPredStart;
+    }
+#endif
     for (const auto& p : pointPredictorMC) {
       auto& predPoint = (*compensatedPointCloud)[counter++];
       predPoint[0] = p[0];
       predPoint[1] = p[1];
       predPoint[2] = p[2];
     }
+#if INTER_HIERARCHICAL
+    if ( node0->interDir == 0 ) {
+      node0->predEnd = compensatedPointCloud->getPointCount();
+    } else if ( node0->interDir == 1 ) {
+      node0->backPredEnd = compensatedPointCloud->getPointCount();
+    }
+#else
     node0->predEnd = compensatedPointCloud->getPointCount();
+#endif
     node0->isCompensated = true;
     return;
   }

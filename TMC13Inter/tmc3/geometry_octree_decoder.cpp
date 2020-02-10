@@ -84,6 +84,10 @@ public:
 
   bool decodeVvsW();
 
+#if INTER_HIERARCHICAL
+  bool decodeInterDir();
+#endif
+
 private:
   // selects between the bitwise and bytewise occupancy coders
   const bool _useBitwiseOccupancyCoder;
@@ -99,6 +103,9 @@ private:
   AdaptiveBitModel _ctxNumIdcmPointsEq1;
   AdaptiveBitModelFast _ctxLpuPresence;
   AdaptiveBitModelFast _ctxVvsW;
+#if INTER_HIERARCHICAL
+  AdaptiveBitModelFast _ctxInterDir;
+#endif
 
   // For bitwise occupancy coding
   //   map 0 = not predicted
@@ -408,6 +415,14 @@ GeometryOctreeDecoder::decodeVvsW()
   return _arithmeticDecoder->decode(_ctxVvsW);
 }
 
+#if INTER_HIERARCHICAL
+bool
+GeometryOctreeDecoder::decodeInterDir()
+{
+  return _arithmeticDecoder->decode(_ctxInterDir);
+}
+#endif
+
 //-------------------------------------------------------------------------
 
 void
@@ -416,6 +431,9 @@ decodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyDecoder* arithmeticDecoder,
   pcc::ringbuf<PCCOctree3Node>* nodesRemaining)
 {
@@ -443,6 +461,10 @@ decodeGeometryOctree(
   node00.pos = uint32_t(0);
   node00.predStart = uint32_t(0);
   node00.predEnd = uint32_t(predPointCloud.getPointCount());
+#if INTER_HIERARCHICAL
+  node00.backPredStart = uint32_t(0);
+  node00.backPredEnd = uint32_t(backPredPointCloud.getPointCount());
+#endif
   node00.neighPattern = 0;
   node00.numSiblingsPlus1 = 8;
   node00.siblingOccupancy = 0;
@@ -509,6 +531,14 @@ decodeGeometryOctree(
        if (gps.motion.global_motion_enabled && node0.hasMotion) {
          node0.isWorld = decoder.decodeVvsW();
        }
+
+#if INTER_HIERARCHICAL
+       if (node0.hasMotion)
+       {
+         node0.interDir = decoder.decodeInterDir();
+       }
+#endif
+
       }
     }
 
@@ -517,7 +547,11 @@ decodeGeometryOctree(
       // (continue) decoding the PU_tree if size is eligible and not compensated yet
       decode_splitPU_MV_MC(
         &node0, gps.motion, nodeSizeLog2, arithmeticDecoder,
+#if INTER_HIERARCHICAL
+        predPointCloud, backPredPointCloud, &compensatedCloud, pointPredictorVehicle,
+#else
         predPointCloud, &compensatedCloud, pointPredictorVehicle,
+#endif
         pointPredictorWorld);
     }
 
@@ -534,16 +568,45 @@ decodeGeometryOctree(
 
     // sort and partition the predictor
     std::array<int, 8> predCounts = {};
+#if INTER_HIERARCHICAL
+    std::array<int, 8> backPredCounts = {};
+#endif
     if (node0.isCompensated) {
+#if INTER_HIERARCHICAL
+      if (node0.interDir == 1) {
+        countingSort(
+          PCCPointSet3::iterator(&compensatedCloud, node0.backPredStart),
+          PCCPointSet3::iterator(&compensatedCloud, node0.backPredEnd), backPredCounts,
+          sortPredicate);
+      }
+      else if (node0.interDir == 0) {
+        countingSort(
+          PCCPointSet3::iterator(&compensatedCloud, node0.predStart),
+          PCCPointSet3::iterator(&compensatedCloud, node0.predEnd), predCounts,
+          sortPredicate);
+      }
+#else
       countingSort(
         PCCPointSet3::iterator(&compensatedCloud, node0.predStart),
         PCCPointSet3::iterator(&compensatedCloud, node0.predEnd),
         predCounts, sortPredicate);
+#endif
     } else {
+#if INTER_HIERARCHICAL
+        countingSort(
+          PCCPointSet3::iterator(&backPredPointCloud, node0.backPredStart),
+          PCCPointSet3::iterator(&backPredPointCloud, node0.backPredEnd), backPredCounts,
+          sortPredicate);
+        countingSort(
+          PCCPointSet3::iterator(&predPointCloud, node0.predStart),
+          PCCPointSet3::iterator(&predPointCloud, node0.predEnd), predCounts,
+          sortPredicate);
+#else
       countingSort(
         PCCPointSet3::iterator(&predPointCloud, node0.predStart),
         PCCPointSet3::iterator(&predPointCloud, node0.predEnd), predCounts,
         sortPredicate);
+#endif
     }
 
     // generate the bitmap of child occupancy and count
@@ -551,10 +614,22 @@ decodeGeometryOctree(
     int predOccupancy = 0;
     int predOccupancyStrong = 0;
     for (int i = 0; i < 8; i++) {
+#if INTER_HIERARCHICAL
+      bool childPredicted = !!predCounts[i];
+      if ( node0.interDir == 1 ) {
+        childPredicted = !!backPredCounts[i];
+      }
+      if (childPredicted) {
+#else
       if (predCounts[i]) {
+#endif
         predOccupancy |= 1 << i;
       }
+#if INTER_HIERARCHICAL
+      if (predCounts[i] > 2 || backPredCounts[i] > 2) {
+#else
       if (predCounts[i] > 2) {
+#endif
         predOccupancyStrong |= 1 << i;
       }
     }
@@ -611,11 +686,17 @@ decodeGeometryOctree(
 
     // split the current node
     int predPointsStartIdx = node0.predStart;
+#if INTER_HIERARCHICAL
+    int backPredPointsStartIdx = node0.backPredStart;
+#endif
     for (int i = 0; i < 8; i++) {
       uint32_t mask = 1 << i;
       if (!(occupancy & mask)) {
         // child is empty: skip
         predPointsStartIdx += predCounts[i];
+#if INTER_HIERARCHICAL
+        backPredPointsStartIdx += backPredCounts[i];
+#endif
         continue;
       }
 
@@ -656,10 +737,18 @@ decodeGeometryOctree(
       child.numSiblingsMispredicted = predFailureCount;
       child.predStart = predPointsStartIdx;
       child.predEnd = predPointsStartIdx + predCounts[i];
+#if INTER_HIERARCHICAL
+      child.interDir = node0.interDir;
+      child.backPredStart = backPredPointsStartIdx;
+      child.backPredEnd = backPredPointsStartIdx + backPredCounts[i];
+#endif
       child.hasMotion = node0.hasMotion;
       child.isCompensated = node0.isCompensated;
       child.isWorld = node0.isWorld;
       predPointsStartIdx = child.predEnd;
+#if INTER_HIERARCHICAL
+      backPredPointsStartIdx = child.backPredEnd;
+#endif
 
       bool directModeEligible = isDirectModeEligible(
         gps.inferred_direct_coding_mode_enabled_flag, nodeSizeLog2, node0,
@@ -704,10 +793,29 @@ decodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyDecoder* arithmeticDecoder)
 {
+
+// consider only the MV spatial correlation
+
+#if MV_PREDICTION
+  g_positionX.clear();
+  g_positionY.clear();
+  g_positionZ.clear();
+  g_MVX.clear();
+  g_MVY.clear();
+  g_MVZ.clear();
+#endif
+
   decodeGeometryOctree(
+#if INTER_HIERARCHICAL
+    gps, gbh, pointCloud, predPointCloud, backPredPointCloud, arithmeticDecoder, nullptr);
+#else
     gps, gbh, pointCloud, predPointCloud, arithmeticDecoder, nullptr);
+#endif
 }
 
 //============================================================================

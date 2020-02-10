@@ -51,6 +51,9 @@ void encodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyEncoder* arithmeticEncoder);
 
 void decodeGeometryOctree(
@@ -58,6 +61,9 @@ void decodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyDecoder* arithmeticDecoder);
 
 //----------------------------------------------------------------------------

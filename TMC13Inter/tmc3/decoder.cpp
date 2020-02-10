@@ -66,12 +66,20 @@ PCCTMC3Decoder3::init()
 int
 PCCTMC3Decoder3::decompress(
   const DecoderParams& params,
+#if INTER_HIERARCHICAL
+  const int firstFrameNumSeq,
+  const int frameCountSeq,
+#endif
   const PayloadBuffer* buf,
   PCCTMC3Decoder3::Callbacks* callback)
 {
   if (!buf) {
     // flush decoder, output pending cloud if any
+#if INTER_HIERARCHICAL
+    callback->onOutputCloud(_currentPointCloud, poc);
+#else
     callback->onOutputCloud(_currentPointCloud);
+#endif
     return 0;
   }
 
@@ -85,9 +93,81 @@ PCCTMC3Decoder3::decompress(
   case PayloadType::kGeometryBrick:
     // call onOutputCloud when starting a new cloud
     if (_currentPointCloud.getPointCount()) {
+#if INTER_HIERARCHICAL
+      callback->onOutputCloud(_currentPointCloud, poc);
+#else
       callback->onOutputCloud(_currentPointCloud);
+#endif
       // save the decoded pointcloud in the reference buffer
+
+#if INTER_HIERARCHICAL
+      firstFrameNum = firstFrameNumSeq;
+      frameCount = frameCountSeq;
+      int randomaccesPeriod = 8;
+
+      if ( !lastGOP )
+      {
+        int index = (poc - firstFrameNum) % randomaccesPeriod;
+
+        if (index != 0)
+        {
+          recGOPPointCloud[index] = _currentPointCloud;
+        }
+        else if (poc == firstFrameNum)
+        {
+          recGOPPointCloud[0] = _currentPointCloud;
+          recGOPPointCloud[8] = _currentPointCloud;
+        }
+        else // for other cases
+        {
+          recGOPPointCloud[0] = recGOPPointCloud[8];
+          recGOPPointCloud[8] = _currentPointCloud;
+        }
+      }
+      else if ( lastGOP )
+      {
+        recGOPPointCloud[8] = _currentPointCloud;
+      }
+
+      const int lastFrameNum = firstFrameNum + frameCount;
+      frameNum++;
+
+      if ((frameNum + randomaccesPeriod - 1 - firstFrameNum) % randomaccesPeriod == 0)
+      {
+        if (frameNum + randomaccesPeriod > lastFrameNum)
+        {
+          lastGOP = true;
+        }
+    }
+
+      if (!lastGOP)
+      {
+        int frameIndex = (frameNum - firstFrameNum - 1) % randomaccesPeriod;
+
+        int pocIndex = 0;
+        switch (frameIndex)
+        {
+        case 0: pocIndex = 8; break;
+        case 1: pocIndex = 4; break;
+        case 2: pocIndex = 2; break;
+        case 3: pocIndex = 1; break;
+        case 4: pocIndex = 3; break;
+        case 5: pocIndex = 6; break;
+        case 6: pocIndex = 5; break;
+        case 7: pocIndex = 7; break;
+        default:
+          break;
+        }
+
+        poc = (frameNum - firstFrameNum - 1) / randomaccesPeriod * randomaccesPeriod + firstFrameNum + pocIndex;
+      }
+      else if (lastGOP)
+      {
+        poc = frameNum;
+      }
+#else
       std::swap(_refPointCloud, _currentPointCloud);
+#endif
     }
     return decodeGeometryBrick(*buf);
 
@@ -171,8 +251,37 @@ PCCTMC3Decoder3::decodeGeometryBrick(const PayloadBuffer& buf)
   minPositions.y() = gbh.geomBoxOrigin.y();
   minPositions.z() = gbh.geomBoxOrigin.z();
 
+#if INTER_HIERARCHICAL
+  if (gbh.random_access_point) {
+    _refPointCloud.clear();
+    _backRefPointCloud.clear();
+  }
+  else if ( !lastGOP ) {
+    int pocIndex = (poc - firstFrameNum) % 8;                       // poc supposed to be parsed. it is a fixed value currently
+    if (pocIndex == 4)
+    {
+      _refPointCloud = recGOPPointCloud[0];
+      _backRefPointCloud = recGOPPointCloud[8];
+    }
+    else if (pocIndex == 2 || pocIndex == 6)
+    {
+      _refPointCloud = recGOPPointCloud[pocIndex - 2];
+      _backRefPointCloud = recGOPPointCloud[pocIndex + 2];
+    }
+    else
+    {
+      _refPointCloud = recGOPPointCloud[pocIndex - 1];
+      _backRefPointCloud = recGOPPointCloud[pocIndex + 1];
+    }
+  }
+  else {
+    _refPointCloud = recGOPPointCloud[8];
+    _backRefPointCloud = recGOPPointCloud[8];
+  }
+#else
   if (gbh.random_access_point)
     _refPointCloud.clear();
+#endif
 
   EntropyDecoder arithmeticDecoder;
   arithmeticDecoder.setBuffer(int(buf.size()) - gbhSize, buf.data() + gbhSize);
@@ -181,7 +290,11 @@ PCCTMC3Decoder3::decodeGeometryBrick(const PayloadBuffer& buf)
   if (_gps->geom_codec_type == GeometryCodecType::kOctree) {
     _currentPointCloud.resize(gbh.geom_num_points);
     decodeGeometryOctree(
+#if INTER_HIERARCHICAL
+      *_gps, gbh, _currentPointCloud, _refPointCloud, _backRefPointCloud, &arithmeticDecoder);
+#else
       *_gps, gbh, _currentPointCloud, _refPointCloud, &arithmeticDecoder);
+#endif
   }
   if (_gps->geom_codec_type == GeometryCodecType::kTriSoup) {
     decodeGeometryTrisoup(*_gps, gbh, _currentPointCloud, &arithmeticDecoder);

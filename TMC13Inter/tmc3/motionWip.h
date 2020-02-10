@@ -72,6 +72,10 @@ bool motionSearchForNode(
   int nodeSizeLog2,
   EntropyEncoder* arithmeticEncoder,
   PCCPointSet3& pointPredictor,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPointPredictor,
+  int& interDir,
+#endif
   int* bufferPoints,
   PUtree* local_PU_tree,
   PCCPointSet3& pointPredictorVehicle,
@@ -84,6 +88,9 @@ void encode_splitPU_MV_MC(
   int nodeSizeLog2,
   EntropyEncoder* arithmeticEncoder,
   PCCPointSet3& pointPredictor,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPointPredictor,
+#endif
   PCCPointSet3* compensatedPointCloud,
   PCCPointSet3& pointPredictorVehicle,
   PCCPointSet3& pointPredictorWorld);
@@ -105,6 +112,9 @@ void decode_splitPU_MV_MC(
   int nodeSizeLog2,
   EntropyDecoder* arithmeticDecoder,
   PCCPointSet3& pointPredictor,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPointPredictor,
+#endif
   PCCPointSet3* compensatedPointCloud,
   PCCPointSet3& pointPredictorVehicle,
   PCCPointSet3& pointPredictorWorld);

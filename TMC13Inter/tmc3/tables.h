@@ -38,7 +38,6 @@
 #include <cstdint>
 
 namespace pcc {
-
 // Symmetry reduction of 64 neighbour pattern to 10
 extern const uint8_t kNeighPattern64to10[64];
 extern const uint8_t kNeighPattern64to6[64];

@@ -88,9 +88,16 @@ decodeGeometryTrisoup(
 {
   // trisoup uses octree coding until reaching the triangulation level.
   PCCPointSet3 predPointCloud;
+#if INTER_HIERARCHICAL
+  PCCPointSet3 backPredPointCloud;
+#endif
   pcc::ringbuf<PCCOctree3Node> nodes;
   decodeGeometryOctree(
+#if INTER_HIERARCHICAL
+    gps, gbh, pointCloud, predPointCloud, backPredPointCloud, arithmeticDecoder, &nodes);
+#else
     gps, gbh, pointCloud, predPointCloud, arithmeticDecoder, &nodes);
+#endif
 
   int blockWidth = 1 << (gps.trisoup_depth - gps.trisoup_triangle_level);
 

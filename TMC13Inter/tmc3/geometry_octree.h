@@ -66,6 +66,11 @@ struct PCCOctree3Node {
   uint32_t predStart;
   uint32_t predEnd;
 
+#if INTER_HIERARCHICAL
+  uint32_t backPredStart;
+  uint32_t backPredEnd;
+#endif
+
   // address of the current node in 3D morton order.
   uint64_t mortonIdx;
 
@@ -90,6 +95,10 @@ struct PCCOctree3Node {
 
   // Prediction Unit tree (encoder only) attached to node
   std::unique_ptr<PUtree> PU_tree;
+
+#if INTER_HIERARCHICAL
+  int  interDir;
+#endif
 
   // prediction ranges refer to compensated reference
   bool isCompensated : 1;
@@ -122,6 +131,9 @@ void encodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyEncoder* arithmeticEncoder,
   pcc::ringbuf<PCCOctree3Node>* nodesRemaining);
 
@@ -130,6 +142,9 @@ void decodeGeometryOctree(
   const GeometryBrickHeader& gbh,
   PCCPointSet3& pointCloud,
   PCCPointSet3& predPointCloud,
+#if INTER_HIERARCHICAL
+  PCCPointSet3& backPredPointCloud,
+#endif
   EntropyDecoder* arithmeticDecoder,
   pcc::ringbuf<PCCOctree3Node>* nodesRemaining);
 

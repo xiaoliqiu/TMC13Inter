@@ -54,9 +54,16 @@ encodeGeometryTrisoup(
 {
   // trisoup uses octree coding until reaching the triangulation level.
   PCCPointSet3 predPointCloud;
+#if INTER_HIERARCHICAL
+  PCCPointSet3 backPredPointCloud;
+#endif
   pcc::ringbuf<PCCOctree3Node> nodes;
   encodeGeometryOctree(
+#if INTER_HIERARCHICAL
+    params, sps, gps, gbh, pointCloud, predPointCloud, backPredPointCloud, arithmeticEncoder,
+#else
     params, sps, gps, gbh, pointCloud, predPointCloud, arithmeticEncoder,
+#endif
     &nodes);
 
   int blockWidth = 1 << (gps.trisoup_depth - gps.trisoup_triangle_level);

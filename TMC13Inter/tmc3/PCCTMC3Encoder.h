@@ -97,6 +97,12 @@ public:
 
   void init();
 
+#if INTER_HIERARCHICAL
+  void setPOC(int pocSeq) { poc = pocSeq; }
+  void setFirstFramePOC(int firstFramePOCSeq) { firstFramePOC = firstFramePOCSeq; }
+  void setLastGOP(bool lastGOPSeq) { lastGOP = lastGOPSeq; }
+#endif
+
   int compress(
     const PCCPointSet3& inputPointCloud,
     const EncoderParams& params,
@@ -121,6 +127,15 @@ private:
   // Point cloud that acts as a predictor of @pointCloud's geometry
   // occupancy.
   PCCPointSet3 predPointCloud;
+
+#if INTER_HIERARCHICAL
+  PCCPointSet3 backPredPointCloud;
+  PCCPointSet3 recGOPPointCloud[9];
+
+  int poc;
+  int firstFramePOC;
+  bool lastGOP;
+#endif
 
   // The active parameter sets
   const SequenceParameterSet* _sps;

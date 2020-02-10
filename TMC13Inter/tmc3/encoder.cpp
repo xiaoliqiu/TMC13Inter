@@ -138,10 +138,37 @@ PCCTMC3Encoder3::compress(
 
   init();
 
-  if (params->randomAccessPoint) {
+  if (params.randomAccessPoint) {
     // ensure that there is nothing to predict the random access point with
     predPointCloud.clear();
+#if INTER_HIERARCHICAL
+    backPredPointCloud.clear();
+#endif
   }
+#if INTER_HIERARCHICAL
+  else if (!lastGOP) {
+    int pocIndex = (poc - firstFramePOC) % params.randomAccessPeriod;
+    if (pocIndex == 4)
+    {
+      predPointCloud = recGOPPointCloud[0];
+      backPredPointCloud = recGOPPointCloud[8];
+    }
+    else if (pocIndex == 2 || pocIndex == 6)
+    {
+      predPointCloud = recGOPPointCloud[pocIndex - 2];
+      backPredPointCloud = recGOPPointCloud[pocIndex + 2];
+    }
+    else
+    {
+      predPointCloud = recGOPPointCloud[pocIndex - 1];
+      backPredPointCloud = recGOPPointCloud[pocIndex + 1];
+    }
+  }
+  else if (lastGOP) {
+    predPointCloud = recGOPPointCloud[8];
+    backPredPointCloud = recGOPPointCloud[8];
+  }
+#endif
 
   // placeholder to "activate" the parameter sets
   _sps = &_spss[0];
@@ -240,7 +267,36 @@ PCCTMC3Encoder3::compress(
 
   // Save the the reconstructed (but not rescaled) point cloud as a future
   // predictor.
+#if INTER_HIERARCHICAL
+  int index = (poc - firstFramePOC) % params.randomAccessPeriod;
+
+  if (!lastGOP)
+  {
+    if (index != 0)
+    {
+      recGOPPointCloud[index] = pointCloud;
+    }
+    else if (poc == firstFramePOC)
+    {
+      recGOPPointCloud[0] = pointCloud;
+      recGOPPointCloud[8] = pointCloud;
+    }
+    else // for other cases
+    {
+      recGOPPointCloud[0] = recGOPPointCloud[8];
+      recGOPPointCloud[8] = pointCloud;
+    }
+  }
+  else if ( lastGOP )
+  {
+    recGOPPointCloud[8] = pointCloud;
+  }
+
+  printf("poc is %d, pocIndex is %d\n", poc, index);
+
+#else
   predPointCloud = pointCloud;
+#endif
 
   reconstructedPointCloud(reconstructedCloud);
 
@@ -282,7 +338,11 @@ PCCTMC3Encoder3::encodeGeometryBrick(
 
   if (_gps->geom_codec_type == GeometryCodecType::kOctree) {
     encodeGeometryOctree(
+#if INTER_HIERARCHICAL
+      params, *_sps, *_gps, gbh, pointCloud, predPointCloud, backPredPointCloud,
+#else
       params, *_sps, *_gps, gbh, pointCloud, predPointCloud,
+#endif
       &arithmeticEncoder);
   }
   if (_gps->geom_codec_type == GeometryCodecType::kTriSoup) {
@@ -292,6 +352,11 @@ PCCTMC3Encoder3::encodeGeometryBrick(
 
   uint32_t dataLen = arithmeticEncoder.stop();
   std::copy_n(arithmeticEncoder.buffer(), dataLen, std::back_inserter(*buf));
+
+#if MV_PREDICTION_RDO
+  std::cout << g_predGood << "\t" << g_predBad << std::endl;
+#endif
+
 }
 
 //----------------------------------------------------------------------------
