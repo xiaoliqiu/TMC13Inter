@@ -43,25 +43,7 @@
 
 #define DISABLE_GLOBLE_MOTION    1
 
-#define MV_PREDICTION            0
-#define MV_PREDICTION_RDO        0
-#define MV_PREDICTION_ME         0
-
-#define INTER_HIERARCHICAL       0
-#define INTER_COUNT              0
-
-#if MV_PREDICTION
-extern std::vector<int> g_positionX;
-extern std::vector<int> g_positionY;
-extern std::vector<int> g_positionZ;
-
-extern std::vector<int> g_MVX;
-extern std::vector<int> g_MVY;
-extern std::vector<int> g_MVZ;
-
-extern int g_predGood;
-extern int g_predBad;
-#endif
+#define INTER_HIERARCHICAL       1
 
 namespace pcc {
 

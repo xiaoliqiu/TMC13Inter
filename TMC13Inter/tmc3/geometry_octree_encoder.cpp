@@ -472,11 +472,6 @@ encodeGeometryOctree(
   node00.hasMotion = 0;
   node00.isCompensated = 0;
 
-#if INTER_COUNT
-  int countInter = 0;
-  int countIntra = 0;
-#endif
-
   // global motion is here
   PCCPointSet3 pointPredictorWorld;
   PCCPointSet3 pointPredictorVehicle;
@@ -569,9 +564,6 @@ encodeGeometryOctree(
 
       encoder.encodeLpuPresence(node0.hasMotion);
       if (node0.hasMotion) {
-#if INTER_COUNT
-        countInter++;
-#endif
         node0.PU_tree = std::move(PU_tree);
         // encode world vs vehicle
         if (gps.motion.global_motion_enabled)
@@ -582,9 +574,6 @@ encodeGeometryOctree(
 #endif
 
       } else {
-#if INTER_COUNT
-        countIntra++;
-#endif
         node0.PU_tree = nullptr;
       }
     }
@@ -864,10 +853,6 @@ encodeGeometryOctree(
     }
   }
 
-#if INTER_COUNT
-  std::cout << "The inter count is " << countInter << " The intra count is " << countIntra << std::endl;
-#endif
-
   // return partial coding result
   if (nodesRemaining) {
     *nodesRemaining = std::move(fifo);
@@ -916,15 +901,6 @@ encodeGeometryOctree(
 #endif
   EntropyEncoder* arithmeticEncoder)
 {
-#if MV_PREDICTION
-  g_positionX.clear();
-  g_positionY.clear();
-  g_positionZ.clear();
-  g_MVX.clear();
-  g_MVY.clear();
-  g_MVZ.clear();
-#endif
-
   encodeGeometryOctree(
 #if INTER_HIERARCHICAL
     params, sps, gps, gbh, pointCloud, predPointCloud, backPredPointCloud, arithmeticEncoder,

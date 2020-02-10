@@ -798,18 +798,6 @@ decodeGeometryOctree(
 #endif
   EntropyDecoder* arithmeticDecoder)
 {
-
-// consider only the MV spatial correlation
-
-#if MV_PREDICTION
-  g_positionX.clear();
-  g_positionY.clear();
-  g_positionZ.clear();
-  g_MVX.clear();
-  g_MVY.clear();
-  g_MVZ.clear();
-#endif
-
   decodeGeometryOctree(
 #if INTER_HIERARCHICAL
     gps, gbh, pointCloud, predPointCloud, backPredPointCloud, arithmeticDecoder, nullptr);

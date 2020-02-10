@@ -41,19 +41,6 @@
 #include <iomanip>
 #include <iterator>
 
-#if MV_PREDICTION
-std::vector<int> g_positionX;
-std::vector<int> g_positionY;
-std::vector<int> g_positionZ;
-
-std::vector<int> g_MVX;
-std::vector<int> g_MVY;
-std::vector<int> g_MVZ;
-
-int g_predGood = 0;
-int g_predBad = 0;
-#endif
-
 namespace pcc {
 
 //============================================================================

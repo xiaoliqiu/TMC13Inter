@@ -352,11 +352,6 @@ PCCTMC3Encoder3::encodeGeometryBrick(
 
   uint32_t dataLen = arithmeticEncoder.stop();
   std::copy_n(arithmeticEncoder.buffer(), dataLen, std::back_inserter(*buf));
-
-#if MV_PREDICTION_RDO
-  std::cout << g_predGood << "\t" << g_predBad << std::endl;
-#endif
-
 }
 
 //----------------------------------------------------------------------------

@@ -52,10 +52,6 @@ namespace pcc {
 
 struct MotionEntropy {
   AdaptiveBitModel splitPu;
-#if MV_PREDICTION_RDO
-  AdaptiveBitModel bPred;
-#endif
-
   StaticBitModel mvSign;
   AdaptiveBitModel mvIsZero;
   StaticBitModel expGolombV0;
@@ -73,9 +69,6 @@ public:
   {}
 
   void encodeSplitPu(int symbol);
-#if MV_PREDICTION_RDO
-  void encodePredPu(int symbol);
-#endif
   void encodeVector(
     const PCCVector3<int>& mv,
     int mvPrecision,
@@ -95,9 +88,6 @@ public:
   {}
 
   bool decodeSplitPu();
-#if MV_PREDICTION_RDO
-  bool decodePredPu();
-#endif
   void decodeVector(PCCVector3<int>* mv, int boundPrefix, int boundSuffix);
 
 private:
@@ -148,14 +138,6 @@ MotionEntropyEncoder::encodeSplitPu(int symbol)
   _arithmeticEncoder->encode(symbol, splitPu);
 }
 
-#if MV_PREDICTION_RDO
-inline void
-MotionEntropyEncoder::encodePredPu(int symbol)
-{
-  _arithmeticEncoder->encode(symbol, bPred);
-}
-#endif
-
 //----------------------------------------------------------------------------
 
 inline bool
@@ -163,14 +145,6 @@ MotionEntropyDecoder::decodeSplitPu()
 {
   return _arithmeticDecoder->decode(splitPu);
 }
-
-#if MV_PREDICTION_RDO
-inline bool
-MotionEntropyDecoder::decodePredPu()
-{
-  return _arithmeticDecoder->decode(bPred);
-}
-#endif
 
 //----------------------------------------------------------------------------
 
@@ -381,20 +355,6 @@ find_motion(
       PCCVector3<int> b = *itB;
       int min_d = max_distance;
       for (const auto w : Window) {
-#if MV_PREDICTION_ME
-        if (w[0] >= x0 && w[0] < x0 + local_size && w[1] >= y0 &&
-          w[1] < y0 + local_size && w[2] >= z0 && w[2] < z0 + local_size)
-        {
-          a0 = std::abs(b[0] - w[0]);
-          a1 = std::abs(b[1] - w[1]);
-          a2 = std::abs(b[2] - w[2]);
-
-          a0 += a1 + a2;
-          if (a0 < min_d)
-            min_d = a0;
-        }
-      }
-#else
         pBuffer[0] = b[0] - w[0];
         a0 = std::abs(pBuffer[0]);
         pBuffer[1] = b[1] - w[1];
@@ -411,7 +371,6 @@ find_motion(
           min_d = a0;
       }
       blockEnds.push_back(blockPos);
-#endif
       Dist += plus1log2shifted4(min_d);  // 1/0.0625 = 16 times log
 #if INTER_HIERARCHICAL
       Nsamples++;
@@ -465,31 +424,6 @@ find_motion(
           Dist = 0;
           int index = 0;
           pBuffer = bufferPoints;
-#if MV_PREDICTION_ME
-          std::vector<PCCVector3<int>>::iterator itB = Block0.begin();
-          int jumpBlock = 1 + (Block0.size() >> encParam.decimate);  // (kind of) random sampling of the original block to code
-          int Nsamples = 0;
-          int a0, a1, a2;
-          for (int Nb = 0; Nb < int(Block0.size()); Nb += jumpBlock, itB += jumpBlock, Nsamples++) {
-            PCCVector3<int> b = *itB;
-            int min_d = max_distance;
-            for (const auto w : Window) {
-              PCCVector3<int> wV = w - V;
-              if (wV[0] >= x0 && wV[0] < x0 + local_size && wV[1] >= y0 &&
-                wV[1] < y0 + local_size && wV[2] >= z0 && wV[2] < z0 + local_size)
-              {
-                a0 = std::abs(b[0] - wV[0]);
-                a1 = std::abs(b[1] - wV[1]);
-                a2 = std::abs(b[2] - wV[2]);
-
-                a0 += a1 + a2;
-                if (a0 < min_d)
-                  min_d = a0;
-              }
-            }
-            Dist += plus1log2shifted4(min_d);
-          }
-#else
           for (int Nb = 0; Nb < Nsamples; Nb++) {
             int min_d = max_distance;
             while (index < blockEnds[Nb + 1]) {
@@ -501,7 +435,6 @@ find_motion(
             }
             Dist += plus1log2shifted4(min_d);  // 1/0.0625 = 16 times log
           }
-#endif
           d = jumpBlock * Dist * 0.0625 + encParam.lambda * motionEntropy.estimateVector(
                   V, param.motion_precision, param.motion_max_prefix_bits,
                   param.motion_max_suffix_bits);
@@ -965,93 +898,10 @@ encode_splitPU_MV_MC(
     // encode MV
     PCCVector3<int> MV = local_PU_tree->MVs[0];
 
-#if MV_PREDICTION
-    // find the neighbor
 
-    PCCVector3<int> predMV = PCCVector3<int>(0, 0, 0);
-
-    int bestDist = 10000;
-    int bestIndex = 0;
-    if ( g_positionX.size() != 0 )
-    {
-      for ( int i = 0; i < g_positionX.size(); i++ )
-      {
-        PCCVector3<int> posRef = PCCVector3<int>(g_positionX[i], g_positionY[i], g_positionZ[i]);
-        PCCVector3<int> posCurr = PCCVector3<int>((node0->pos)[0], (node0->pos)[1], (node0->pos)[2]);
-        PCCVector3<int> diffPos = posRef - posCurr;
-        int dist = diffPos.getNorm();
-
-        if ( dist <= bestDist )
-        {
-          bestDist = dist;
-          bestIndex = i;
-        }
-      }
-
-      if ( bestDist < 256 )   // to avoid too far distance
-      {
-        predMV = PCCVector3<int>(g_MVX[bestIndex], g_MVY[bestIndex], g_MVZ[bestIndex]);
-      }
-    }
-
-    // MV prediction
-    PCCVector3<int> diffMV = MV - predMV;
-
-    g_positionX.push_back((node0->pos)[0]);
-    g_positionY.push_back((node0->pos)[1]);
-    g_positionZ.push_back((node0->pos)[2]);
-    g_MVX.push_back(MV[0]);
-    g_MVY.push_back(MV[1]);
-    g_MVZ.push_back(MV[2]);
-
-#if MV_PREDICTION_RDO
-    bool bPredict = false;
-
-    if ( predMV == PCCVector3<int>(0, 0, 0) )
-    {
-      bPredict = false;
-    }
-    else
-    {
-      if ( bestDist < 256 )
-      {
-        int maxMV = param.motion_window_size / param.motion_precision - 1;
-        if ( abs(diffMV[0]) + abs(diffMV[1]) + abs(diffMV[2]) < abs(MV[0]) + abs(MV[1]) + abs(MV[2]) && abs(diffMV[0]) <= maxMV && abs(diffMV[1]) <= maxMV && abs(diffMV[2]) <= maxMV)
-        {
-          bPredict = true;
-        }
-
-        motionEncoder.encodePredPu(bPredict);
-      }
-    }
-#endif
-
-#endif
-
-#if MV_PREDICTION_RDO
-    if ( bPredict )
-    {
-      g_predGood++;
-      motionEncoder.encodeVector(
-        diffMV, param.motion_precision, param.motion_max_prefix_bits,
-        param.motion_max_suffix_bits);
-    }
-    else
-    {
-      g_predBad++;
-      motionEncoder.encodeVector(
-        MV, param.motion_precision, param.motion_max_prefix_bits,
-        param.motion_max_suffix_bits);
-    }
-#else
     motionEncoder.encodeVector(
-#if MV_PREDICTION
-      diffMV, param.motion_precision, param.motion_max_prefix_bits,
-#else
       MV, param.motion_precision, param.motion_max_prefix_bits,
-#endif
       param.motion_max_suffix_bits);
-#endif
     PCCVector3D MVd = PCCVector3D(double(MV[0]), double(MV[1]), double(MV[2]));
 
     // find search window
@@ -1216,88 +1066,9 @@ decode_splitPU_MV_MC(
     // decode MV
     PCCVector3<int> MV;
 
-#if MV_PREDICTION
-    PCCVector3<int> diffMV;
-#endif
-
-#if MV_PREDICTION
-    PCCVector3<int> predMV = PCCVector3<int>(0, 0, 0);
-    int bestDist = 10000;
-    int bestIndex = 0;
-    if (g_positionX.size() != 0)
-    {
-      for (int i = 0; i < g_positionX.size(); i++)
-      {
-        PCCVector3<int> posRef = PCCVector3<int>(g_positionX[i], g_positionY[i], g_positionZ[i]);
-        PCCVector3<int> posCurr = PCCVector3<int>((node0->pos)[0], (node0->pos)[1], (node0->pos)[2]);
-        PCCVector3<int> diffPos = posRef - posCurr;
-        int dist = diffPos.getNorm();
-
-        if (dist <= bestDist)
-        {
-          bestDist = dist;
-          bestIndex = i;
-        }
-      }
-
-      if (bestDist < 256)   // to avoid too far distance
-      {
-        predMV = PCCVector3<int>(g_MVX[bestIndex], g_MVY[bestIndex], g_MVZ[bestIndex]);
-      }
-    }
-
-#if MV_PREDICTION_RDO
-    bool bPred = false;
-    
-    if ( predMV == PCCVector3<int>(0, 0, 0) )
-    {
-      bPred = false;
-    }
-    else
-    {
-      if (bestDist < 256)
-      {
-        bPred = motionDecoder.decodePredPu();
-      }
-    }
-#endif
-
-#endif
-
-#if MV_PREDICTION_RDO
-    if (bPred)
-    {
-      motionDecoder.decodeVector(
-        &diffMV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
-
-      MV = diffMV + predMV;
-    }
-    else
-    {
-      motionDecoder.decodeVector(
-        &MV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
-    }
-#else
     motionDecoder.decodeVector(
-#if MV_PREDICTION
-      &diffMV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
-
-    MV = diffMV + predMV;
-#else
       &MV, param.motion_max_prefix_bits, param.motion_max_suffix_bits);
-#endif
-#endif
     MV *= param.motion_precision;
-
-#if MV_PREDICTION
-    g_positionX.push_back((node0->pos)[0]);
-    g_positionY.push_back((node0->pos)[1]);
-    g_positionZ.push_back((node0->pos)[2]);
-    g_MVX.push_back(MV[0]);
-    g_MVY.push_back(MV[1]);
-    g_MVZ.push_back(MV[2]);
-#endif
-
 
     PCCVector3D MVd = PCCVector3D(double(MV[0]), double(MV[1]), double(MV[2]));
 
